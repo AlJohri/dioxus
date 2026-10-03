@@ -389,13 +389,17 @@ fn route_impl_with_route(
             // Implicit route lit, we need to hash the function signature to avoid collisions
             Some(_) if route.route_lit.is_none() => {
                 // let enable_hash = option_env!("DISABLE_SERVER_FN_HASH").is_none();
-                let key_env_var = match option_env!("SERVER_FN_OVERRIDE_KEY") {
-                    Some(_) => "SERVER_FN_OVERRIDE_KEY",
-                    None => "CARGO_MANIFEST_DIR",
+                // The package, not its directory: a checkout's path must not
+                // change the URL, or the compiled crate, of a server function.
+                let key = match option_env!("SERVER_FN_OVERRIDE_KEY") {
+                    Some(_) => quote! { env!("SERVER_FN_OVERRIDE_KEY") },
+                    None => quote! {
+                        concat!(env!("CARGO_PKG_NAME"), "@", env!("CARGO_PKG_VERSION"))
+                    },
                 };
                 quote! {
                     dioxus_fullstack::xxhash_rust::const_xxh64::xxh64(
-                        concat!(env!(#key_env_var), ":", module_path!()).as_bytes(),
+                        concat!(#key, ":", module_path!()).as_bytes(),
                         0
                     )
                 }
