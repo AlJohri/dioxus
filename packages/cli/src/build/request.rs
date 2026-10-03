@@ -1416,7 +1416,7 @@ impl BuildRequest {
 
         ctx.status_extracting_assets();
 
-        let mut manifest = extract_symbols_from_file(exe).await?;
+        let mut manifest = extract_symbols_from_file(exe, &self.workspace.package_dirs()).await?;
 
         if matches!(self.bundle, BundleFormat::Web)
             && matches!(ctx.mode, BuildMode::Base { .. } | BuildMode::Fat)

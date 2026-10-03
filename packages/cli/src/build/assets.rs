@@ -690,7 +690,10 @@ fn find_wasm_symbol_offsets<'a, R: ReadRef<'a>>(
 
 /// Find all assets in the given file, hash them, and write them back to the file.
 /// Also extracts Android/Swift plugin metadata for FFI bindings.
-pub(crate) async fn extract_symbols_from_file(path: impl AsRef<Path>) -> Result<AppManifest> {
+pub(crate) async fn extract_symbols_from_file(
+    path: impl AsRef<Path>,
+    package_dirs: &std::collections::HashMap<String, PathBuf>,
+) -> Result<AppManifest> {
     let path = path.as_ref();
     let mut file =
         open_file_for_writing_with_timeout(path, OpenOptions::new().write(true).read(true)).await?;
@@ -785,6 +788,18 @@ pub(crate) async fn extract_symbols_from_file(path: impl AsRef<Path>) -> Result<
             }
         } else {
             tracing::warn!("Found a symbol at offset {offset} that could not be deserialized. This may be caused by a mismatch between your dioxus and dioxus-cli versions, or the symbol may be in an unsupported format.");
+        }
+    }
+
+    for asset in assets.iter_mut() {
+        if let Some((package, path)) = asset.package_relative_source() {
+            let Some(dir) = package_dirs.get(package) else {
+                bail!(
+                    "asset {} is in package {package}, which is not in this build's dependency graph",
+                    asset.absolute_source_path()
+                );
+            };
+            *asset = asset.with_absolute_source_path(&dir.join(path).to_string_lossy());
         }
     }
 

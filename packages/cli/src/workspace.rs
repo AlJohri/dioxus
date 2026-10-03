@@ -24,6 +24,21 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Each package's directory, by `<name>@<version>`: where an asset recorded relative to its
+    /// package is.
+    pub(crate) fn package_dirs(&self) -> std::collections::HashMap<String, PathBuf> {
+        self.krates
+            .krates()
+            .filter_map(|krate| {
+                let dir = krate.manifest_path.parent()?;
+                Some((
+                    format!("{}@{}", krate.name, krate.version),
+                    dir.as_std_path().to_path_buf(),
+                ))
+            })
+            .collect()
+    }
+
     /// Load the workspace from the current directory. This is cached and will only be loaded once.
     pub async fn current() -> Result<Arc<Workspace>> {
         static WS: tokio::sync::Mutex<Option<Arc<Workspace>>> = tokio::sync::Mutex::const_new(None);

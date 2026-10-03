@@ -87,8 +87,29 @@ impl BundledAsset {
     }
 
     /// Get the absolute path of the asset source. This path will not be available when the asset is bundled
+    ///
+    /// An asset inside its package records a path relative to the package instead, in the form
+    /// `cargo-pkg:<name>@<version>/<path>`; see [`BundledAsset::package_relative_source`].
     pub fn absolute_source_path(&self) -> &str {
         self.absolute_source_path.as_str()
+    }
+
+    /// Starts a source path recorded relative to its package.
+    pub const PACKAGE_PREFIX: &str = "cargo-pkg:";
+
+    /// The package (`<name>@<version>`) and the path inside it, when the source path is recorded
+    /// relative to its package.
+    pub fn package_relative_source(&self) -> Option<(&str, &str)> {
+        let rest = self
+            .absolute_source_path()
+            .strip_prefix(Self::PACKAGE_PREFIX)?;
+        let (package, path) = rest.split_once('/')?;
+        Some((package, path))
+    }
+
+    /// This asset with its source at `absolute_source_path`.
+    pub fn with_absolute_source_path(&self, absolute_source_path: &str) -> Self {
+        Self::new(absolute_source_path, self.bundled_path(), self.options)
     }
 
     /// Get the options for the asset
@@ -190,7 +211,14 @@ impl Asset {
         #[cfg(feature = "dioxus")]
         // If the asset is relative, we resolve the asset at the current directory
         if !dioxus_core_types::is_bundled_app() {
-            return PathBuf::from(self.bundled().absolute_source_path.as_str());
+            let bundled = self.bundled();
+            // Unbundled means `cargo run`, whose CARGO_MANIFEST_DIR is the running package's.
+            if let Some((_, path)) = bundled.package_relative_source() {
+                if let Some(dir) = std::env::var_os("CARGO_MANIFEST_DIR") {
+                    return PathBuf::from(dir).join(path);
+                }
+            }
+            return PathBuf::from(bundled.absolute_source_path.as_str());
         }
 
         #[cfg(feature = "dioxus")]

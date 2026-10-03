@@ -16,7 +16,8 @@ pub struct BuildAssets {
 
 impl BuildAssets {
     pub async fn run(self) -> Result<StructuredOutput> {
-        let manifest = crate::extract_symbols_from_file(&self.executable).await?;
+        let package_dirs = crate::Workspace::current().await?.package_dirs();
+        let manifest = crate::extract_symbols_from_file(&self.executable, &package_dirs).await?;
 
         create_dir_all(&self.destination)?;
 
