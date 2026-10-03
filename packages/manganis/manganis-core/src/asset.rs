@@ -76,8 +76,27 @@ impl BundledAsset {
     }
 
     /// Get the absolute path of the asset source. This path will not be available when the asset is bundled
+    ///
+    /// An asset in its package records a path relative to the package instead, in the form
+    /// `cargo-pkg:<name>@<version>/<path>`; see [`BundledAsset::package_relative_source`].
     pub fn absolute_source_path(&self) -> &str {
         self.absolute_source_path.as_str()
+    }
+
+    /// Starts a source path recorded relative to its package.
+    pub const PACKAGE_PREFIX: &str = "cargo-pkg:";
+
+    /// The package (`<name>@<version>`) and the path in it, when the source path is recorded
+    /// relative to its package.
+    pub fn package_relative_source(&self) -> Option<(&str, &str)> {
+        self.absolute_source_path()
+            .strip_prefix(Self::PACKAGE_PREFIX)?
+            .split_once('/')
+    }
+
+    /// This asset with its source at `absolute_source_path`.
+    pub fn with_absolute_source_path(&self, absolute_source_path: &str) -> Self {
+        Self::new(absolute_source_path, self.bundled_path(), self.options)
     }
 
     /// Get the options for the asset
@@ -160,7 +179,14 @@ impl Asset {
         #[cfg(feature = "dioxus")]
         // If the asset is relative, we resolve the asset at the current directory
         if !dioxus_core_types::is_bundled_app() {
-            return PathBuf::from(self.bundled().absolute_source_path.as_str());
+            let bundled = self.bundled();
+            let package_relative = bundled
+                .package_relative_source()
+                .and_then(|(package, path)| Some(unbundled::package_dir(package)?.join(path)));
+            if let Some(path) = package_relative {
+                return path;
+            }
+            return PathBuf::from(bundled.absolute_source_path.as_str());
         }
 
         #[cfg(feature = "dioxus")]
@@ -206,5 +232,93 @@ impl std::fmt::Display for Asset {
 impl dioxus_core_types::DioxusFormattable for Asset {
     fn format(&self) -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Owned(self.to_string())
+    }
+}
+
+/// Package directories for an app run by `cargo run` or `cargo test`, which set `CARGO`,
+/// `CARGO_MANIFEST_DIR`, `CARGO_PKG_NAME` and `CARGO_PKG_VERSION`.
+#[cfg(feature = "dioxus")]
+mod unbundled {
+    use std::{collections::HashMap, path::PathBuf, sync::OnceLock};
+
+    /// The directory of `package` (`<name>@<version>`): the running package's own, else the one
+    /// `cargo metadata` names, asked once.
+    pub(super) fn package_dir(package: &str) -> Option<PathBuf> {
+        let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?);
+        let running = format!(
+            "{}@{}",
+            std::env::var("CARGO_PKG_NAME").ok()?,
+            std::env::var("CARGO_PKG_VERSION").ok()?
+        );
+        if package == running {
+            return Some(manifest_dir);
+        }
+        static DIRS: OnceLock<HashMap<String, PathBuf>> = OnceLock::new();
+        DIRS.get_or_init(|| metadata_dirs(&manifest_dir).unwrap_or_default())
+            .get(package)
+            .cloned()
+    }
+
+    fn metadata_dirs(manifest_dir: &std::path::Path) -> Option<HashMap<String, PathBuf>> {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let output = std::process::Command::new(cargo)
+            .args(["metadata", "--format-version", "1", "--manifest-path"])
+            .arg(manifest_dir.join("Cargo.toml"))
+            .output()
+            .ok()?;
+        dirs_from_metadata(&output.stdout)
+    }
+
+    /// Package directories by `<name>@<version>`, from `cargo metadata --format-version 1`.
+    fn dirs_from_metadata(json: &[u8]) -> Option<HashMap<String, PathBuf>> {
+        let metadata: serde_json::Value = serde_json::from_slice(json).ok()?;
+        let dirs = metadata["packages"]
+            .as_array()?
+            .iter()
+            .filter_map(|package| {
+                let manifest = PathBuf::from(package["manifest_path"].as_str()?);
+                Some((
+                    format!(
+                        "{}@{}",
+                        package["name"].as_str()?,
+                        package["version"].as_str()?
+                    ),
+                    manifest.parent()?.to_path_buf(),
+                ))
+            })
+            .collect();
+        Some(dirs)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn metadata_gives_each_package_its_directory() {
+            let json = br#"{"packages": [
+                {"name": "app", "version": "0.1.0", "manifest_path": "/w/app/Cargo.toml"},
+                {"name": "dep", "version": "2.0.0", "manifest_path": "/r/dep-2.0.0/Cargo.toml"}
+            ]}"#;
+            let dirs = dirs_from_metadata(json).unwrap();
+            assert_eq!(dirs["app@0.1.0"], PathBuf::from("/w/app"));
+            assert_eq!(dirs["dep@2.0.0"], PathBuf::from("/r/dep-2.0.0"));
+        }
+
+        #[test]
+        fn cargo_metadata_finds_a_package() {
+            let dir = tempfile::tempdir().unwrap();
+            // `cargo metadata` reports the canonical path (macOS links /var to /private/var).
+            let manifest_dir = std::fs::canonicalize(dir.path()).unwrap();
+            std::fs::write(
+                manifest_dir.join("Cargo.toml"),
+                "[package]\nname = \"probe\"\nversion = \"1.2.3\"\nedition = \"2021\"\n\n[workspace]\n",
+            )
+            .unwrap();
+            std::fs::create_dir(manifest_dir.join("src")).unwrap();
+            std::fs::write(manifest_dir.join("src/lib.rs"), "").unwrap();
+            let dirs = metadata_dirs(&manifest_dir).unwrap();
+            assert_eq!(dirs["probe@1.2.3"], manifest_dir);
+        }
     }
 }

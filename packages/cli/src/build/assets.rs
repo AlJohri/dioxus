@@ -484,7 +484,10 @@ fn find_wasm_symbol_offsets<'a, R: ReadRef<'a>>(
 
 /// Find all assets in the given file, hash them, and write them back to the file.
 /// Also extracts Android/Swift plugin metadata for FFI bindings.
-pub(crate) async fn extract_symbols_from_file(path: impl AsRef<Path>) -> Result<AppManifest> {
+pub(crate) async fn extract_symbols_from_file(
+    path: impl AsRef<Path>,
+    package_dirs: &std::collections::HashMap<String, PathBuf>,
+) -> Result<AppManifest> {
     let path = path.as_ref();
     let mut file =
         open_file_for_writing_with_timeout(path, OpenOptions::new().write(true).read(true)).await?;
@@ -582,6 +585,16 @@ pub(crate) async fn extract_symbols_from_file(path: impl AsRef<Path>) -> Result<
         }
     }
 
+    // The binary keeps a package-relative source as it was, so the bundle does not record the
+    // directory it was built from; the manifest gets the resolved path to copy from.
+    let recorded_sources: Vec<String> = assets
+        .iter()
+        .map(|asset| asset.absolute_source_path().to_string())
+        .collect();
+    for asset in assets.iter_mut() {
+        *asset = with_package_resolved(asset, package_dirs)?;
+    }
+
     // Add the hash to each asset in parallel
     assets
         .par_iter_mut()
@@ -593,7 +606,8 @@ pub(crate) async fn extract_symbols_from_file(path: impl AsRef<Path>) -> Result<
         let asset = assets
             .get(entry.asset_index)
             .copied()
-            .expect("asset index collected from symbol scan");
+            .expect("asset index collected from symbol scan")
+            .with_absolute_source_path(&recorded_sources[entry.asset_index]);
 
         let new_data = match entry.representation {
             AssetRepresentation::RawBundled => {
@@ -716,4 +730,56 @@ fn manganis_symbols<'a, 'b, R: ReadRef<'a>>(
         let section = file.section_by_index(section_index).ok()?;
         Some((symbol, section))
     })
+}
+
+/// `asset` with a source recorded relative to its package made absolute.
+fn with_package_resolved(
+    asset: &BundledAsset,
+    package_dirs: &std::collections::HashMap<String, PathBuf>,
+) -> Result<BundledAsset> {
+    let Some((package, path)) = asset.package_relative_source() else {
+        return Ok(*asset);
+    };
+    let Some(dir) = package_dirs.get(package) else {
+        bail!(
+            "asset {} is in package {package}, which is not in this build's dependency graph",
+            asset.absolute_source_path()
+        );
+    };
+    Ok(asset.with_absolute_source_path(&dir.join(path).to_string_lossy()))
+}
+
+#[cfg(test)]
+mod package_relative_tests {
+    use super::*;
+    use manganis::AssetOptions;
+    use std::collections::HashMap;
+
+    fn asset(source: &str) -> BundledAsset {
+        BundledAsset::new(
+            source,
+            BundledAsset::PLACEHOLDER_HASH,
+            AssetOptions::builder().into_asset_options(),
+        )
+    }
+
+    #[test]
+    fn a_package_relative_source_is_resolved_through_its_package() {
+        let dirs = HashMap::from([("app@0.1.0".to_string(), PathBuf::from("/w/app"))]);
+        let resolved =
+            with_package_resolved(&asset("cargo-pkg:app@0.1.0/assets/a.css"), &dirs).unwrap();
+        assert_eq!(
+            PathBuf::from(resolved.absolute_source_path()),
+            PathBuf::from("/w/app/assets/a.css")
+        );
+        let absolute = asset("/elsewhere/a.css");
+        assert_eq!(with_package_resolved(&absolute, &dirs).unwrap(), absolute);
+    }
+
+    #[test]
+    fn an_unknown_package_is_an_error() {
+        let error = with_package_resolved(&asset("cargo-pkg:gone@1.0.0/a.css"), &HashMap::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("gone@1.0.0"), "{error}");
+    }
 }

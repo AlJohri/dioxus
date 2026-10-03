@@ -18,9 +18,11 @@ const-serialize = { package = "const-serialize", path = "../../const-serialize",
 dioxus-core-types = { workspace = true, optional = true }
 dioxus-cli-config = { workspace = true, optional = true }
 winnow = { workspace = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 manganis = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
-dioxus = ["dep:dioxus-core-types", "dep:dioxus-cli-config"]
+dioxus = ["dep:dioxus-core-types", "dep:dioxus-cli-config", "dep:serde_json"]

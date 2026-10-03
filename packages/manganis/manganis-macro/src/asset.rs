@@ -73,11 +73,53 @@ impl ToTokens for AssetParser {
     }
 }
 
+/// `manganis_core::BundledAsset::PACKAGE_PREFIX`, which this crate cannot depend on.
+const PACKAGE_PREFIX: &str = "cargo-pkg:";
+
+/// `asset` relative to `CARGO_MANIFEST_DIR`, with `/` separators. `None` for an
+/// asset under `OUT_DIR`, which is per checkout in any case and may sit inside
+/// the package when the target directory does, and for one outside the package.
+fn package_relative_path(asset: &Path) -> Option<String> {
+    let canonical = |var| std::env::var_os(var).and_then(|dir| dunce::canonicalize(dir).ok());
+    if canonical("OUT_DIR").is_some_and(|out_dir| asset.starts_with(out_dir)) {
+        return None;
+    }
+    let relative = asset.strip_prefix(canonical("CARGO_MANIFEST_DIR")?).ok()?;
+    let parts: Option<Vec<&str>> = relative
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect();
+    Some(parts?.join("/"))
+}
+
 impl AssetParser {
     pub(crate) fn expand_asset_tokens(&self, asset: &Path) -> proc_macro2::TokenStream {
-        let asset_string = asset.to_string_lossy();
-        let mut asset_str = proc_macro2::Literal::string(&asset_string);
-        asset_str.set_span(self.path_expr.span());
+        // An asset in its package is recorded relative to the package, so the
+        // compiled crate does not depend on where the package is checked out.
+        // The CLI and `Asset::resolve` find the package's directory.
+        let package_relative = package_relative_path(asset);
+        let asset_string = match &package_relative {
+            Some(relative) => format!(
+                "{PACKAGE_PREFIX}{}@{}/{relative}",
+                std::env::var("CARGO_PKG_NAME").unwrap_or_default(),
+                std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
+            ),
+            None => asset.to_string_lossy().into_owned(),
+        };
+        let asset_str = match &package_relative {
+            Some(relative) => {
+                let mut relative = proc_macro2::Literal::string(&format!("/{relative}"));
+                relative.set_span(self.path_expr.span());
+                quote! {
+                    concat!(#PACKAGE_PREFIX, env!("CARGO_PKG_NAME"), "@", env!("CARGO_PKG_VERSION"), #relative)
+                }
+            }
+            None => {
+                let mut absolute = proc_macro2::Literal::string(&asset_string);
+                absolute.set_span(self.path_expr.span());
+                quote! { #absolute }
+            }
+        };
 
         let mut hash = DefaultHasher::new();
         format!("{:?}", self.options.span()).hash(&mut hash);

@@ -8299,6 +8299,8 @@ dependencies = [
  "dioxus-core-types",
  "manganis",
  "serde",
+ "serde_json",
+ "tempfile",
  "winnow 0.7.15",
 ]
 
