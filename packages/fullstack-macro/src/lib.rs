@@ -389,13 +389,10 @@ fn route_impl_with_route(
             // Implicit route lit, we need to hash the function signature to avoid collisions
             Some(_) if route.route_lit.is_none() => {
                 // let enable_hash = option_env!("DISABLE_SERVER_FN_HASH").is_none();
-                let key_env_var = match option_env!("SERVER_FN_OVERRIDE_KEY") {
-                    Some(_) => "SERVER_FN_OVERRIDE_KEY",
-                    None => "CARGO_MANIFEST_DIR",
-                };
+                let key = implicit_route_key(option_env!("SERVER_FN_OVERRIDE_KEY").is_some());
                 quote! {
                     dioxus_fullstack::xxhash_rust::const_xxh64::xxh64(
-                        concat!(env!(#key_env_var), ":", module_path!()).as_bytes(),
+                        concat!(#key, ":", module_path!()).as_bytes(),
                         0
                     )
                 }
@@ -1309,6 +1306,17 @@ impl OapiOptions {
     }
 }
 
+/// What an implicit route's hash covers besides the module path. The package,
+/// not its directory: the URL, and the compiled crate, must not change with the
+/// path a package is built from.
+fn implicit_route_key(overridden: bool) -> TokenStream2 {
+    if overridden {
+        quote! { env!("SERVER_FN_OVERRIDE_KEY") }
+    } else {
+        quote! { concat!(env!("CARGO_PKG_NAME"), "@", env!("CARGO_PKG_VERSION")) }
+    }
+}
+
 fn doc_iter(attrs: &[Attribute]) -> impl Iterator<Item = &LitStr> + '_ {
     attrs
         .iter()
@@ -1921,4 +1929,24 @@ fn type_from_ident(ident: Ident) -> Type {
             segments,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::implicit_route_key;
+
+    #[test]
+    fn an_implicit_route_key_names_the_package_not_its_directory() {
+        let key = implicit_route_key(false).to_string();
+        assert!(
+            key.contains("CARGO_PKG_NAME") && key.contains("CARGO_PKG_VERSION"),
+            "{key}"
+        );
+        assert!(!key.contains("CARGO_MANIFEST_DIR"), "{key}");
+        assert!(
+            implicit_route_key(true)
+                .to_string()
+                .contains("SERVER_FN_OVERRIDE_KEY")
+        );
+    }
 }
