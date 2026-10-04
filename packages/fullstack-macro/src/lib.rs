@@ -389,12 +389,10 @@ fn route_impl_with_route(
             // Implicit route lit, we need to hash the function signature to avoid collisions
             Some(_) if route.route_lit.is_none() => {
                 // let enable_hash = option_env!("DISABLE_SERVER_FN_HASH").is_none();
-                let key = implicit_route_key(option_env!("SERVER_FN_OVERRIDE_KEY").is_some());
+                let input =
+                    implicit_route_hash_input(option_env!("SERVER_FN_OVERRIDE_KEY").is_some());
                 quote! {
-                    dioxus_fullstack::xxhash_rust::const_xxh64::xxh64(
-                        concat!(#key, ":", module_path!()).as_bytes(),
-                        0
-                    )
+                    dioxus_fullstack::xxhash_rust::const_xxh64::xxh64(#input.as_bytes(), 0)
                 }
             }
 
@@ -1306,14 +1304,14 @@ impl OapiOptions {
     }
 }
 
-/// What an implicit route's hash covers besides the module path. The package,
-/// not its directory: the URL, and the compiled crate, must not change with the
-/// path a package is built from.
-fn implicit_route_key(overridden: bool) -> TokenStream2 {
+/// What an implicit route's hash covers: the module path, which starts with the
+/// crate name, so the URL and the compiled crate do not change with the
+/// directory a package is built from or with its version.
+fn implicit_route_hash_input(overridden: bool) -> TokenStream2 {
     if overridden {
-        quote! { env!("SERVER_FN_OVERRIDE_KEY") }
+        quote! { concat!(env!("SERVER_FN_OVERRIDE_KEY"), ":", module_path!()) }
     } else {
-        quote! { concat!(env!("CARGO_PKG_NAME"), "@", env!("CARGO_PKG_VERSION")) }
+        quote! { module_path!() }
     }
 }
 
@@ -1933,20 +1931,18 @@ fn type_from_ident(ident: Ident) -> Type {
 
 #[cfg(test)]
 mod tests {
-    use super::implicit_route_key;
+    use super::implicit_route_hash_input;
 
     #[test]
-    fn an_implicit_route_key_names_the_package_not_its_directory() {
-        let key = implicit_route_key(false).to_string();
-        assert!(
-            key.contains("CARGO_PKG_NAME") && key.contains("CARGO_PKG_VERSION"),
-            "{key}"
+    fn an_implicit_route_hashes_its_module_path_only() {
+        assert_eq!(
+            implicit_route_hash_input(false).to_string(),
+            "module_path ! ()"
         );
-        assert!(!key.contains("CARGO_MANIFEST_DIR"), "{key}");
+        let overridden = implicit_route_hash_input(true).to_string();
         assert!(
-            implicit_route_key(true)
-                .to_string()
-                .contains("SERVER_FN_OVERRIDE_KEY")
+            overridden.contains("SERVER_FN_OVERRIDE_KEY") && overridden.contains("module_path"),
+            "{overridden}"
         );
     }
 }
